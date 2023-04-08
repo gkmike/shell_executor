@@ -1,0 +1,13 @@
+job_1:
+    envs:
+        COUNT: 1
+    cmds:
+        - echo 123
+        - echo 345
+job_2:
+    envs:
+        COUNT: 2
+        AA: 2
+    cmds:
+        - echo $AA
+        - echo ok
