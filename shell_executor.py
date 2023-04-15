@@ -7,8 +7,10 @@ import argparse
 import shutil
 
 class Agent:
-    def __init__(self, ws, jobs):
+    def __init__(self, ws, jobs, **kwargs):
         self.boss = Boss(ws)
+        if "rerun_status" in kwargs:
+            self.boss.set_rerun_status(kwargs["rerun_status"])
         self.ws = ws
         self.jobs = None
         self.load_jobs(jobs)
@@ -58,9 +60,10 @@ class GUI:
                 ret += f"{k}={v} "
             return ret
         def gui_run(x):
+            agent.load_jobs(agent.jobs)
             agent.run(1)
             return "done"
-        with gr.Blocks(theme="default") as demo:
+        with gr.Blocks() as demo:
             with gr.Row():
                 btn = gr.Button("run")
                 btn2 = gr.Button("reload")
@@ -88,11 +91,10 @@ class Boss:
         self.todo_workers = []
         self.worker_queue = queue.Queue()
         self.ws = ws
-        self.force_rerun_status = ["ERROR"]
+        self.rerun_status = ["ERROR"]
     def hire_worker(self, worker):
         self.workers[worker.job_name] = worker
-        if worker.status in self.force_rerun_status + [""]:
-            self.todo_workers.append(worker)
+        self.todo_workers.append(worker)
     def get_result(self):
         result = []
         for w in self.workers.values():
@@ -104,9 +106,11 @@ class Boss:
                 if w.dep is not None:
                     if self.workers[w.dep].status != "DONE":
                         continue
+                self.todo_workers.remove(w)
+                if w.status not in self.rerun_status + [""]:
+                    continue
                 w.setup_cwd()
                 self.worker_queue.put(w)
-                self.todo_workers.remove(w)
             if self.worker_queue.qsize() > 0:
                 self.start_works(max_concurrent)
             else:
@@ -125,8 +129,8 @@ class Boss:
         while self.worker_queue.qsize() > 0:
             worker = self.worker_queue.get()
             worker.act()
-    def set_force_rerun_status(self, status_list):
-        self.force_rerun_status = status_list
+    def set_rerun_status(self, status_list):
+        self.rerun_status = status_list
 
 class Worker:
     def __init__(self, job_name, job_data, ws):
