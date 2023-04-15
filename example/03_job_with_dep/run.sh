@@ -1,0 +1,1 @@
+./example.py -y job.yaml -w ws -c 2 -o se_result.csv

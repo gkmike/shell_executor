@@ -6,21 +6,26 @@ jobs = {
     {
         "cmds":
         [
-            "echo 123",
-            "echo 345"
+            "echo hello world",
         ]
     },
     "job_2":
     {
         "envs":
         {
-            "COUNT": 2,
-            "AA": 2
+            "MY_STR": "hello world",
         },
         "cmds":
         [
-            "echo $AA",
-            "echo ok"
+            "echo $MY_STR",
+        ]
+    },
+    "job_3":
+    {
+        "cmds":
+        [
+            "realpath @WD",
+            "ls @WD",
         ]
     }
 }

@@ -23,12 +23,9 @@ class Agent:
             os.makedirs(ws)
         with open(f"{ws}/se_jobs.yaml", "w") as fp:
             yaml.dump(self.jobs, fp, sort_keys=False, default_flow_style=False)
-        self.boss.start_works(max_concurrent)
+        self.boss.run_project(max_concurrent)
     def get_result(self):
-        result = []
-        for w in self.boss.workers:
-            result.append(w.job_report())
-        return result
+        return self.boss.get_result()
     def dump_csv(self, output_file):
         import pandas as pd
         df = pd.DataFrame(self.get_result())
@@ -87,15 +84,35 @@ class GUI:
 
 class Boss:
     def __init__(self, ws):
-        self.workers = [] 
+        self.workers = {}
+        self.todo_workers = []
         self.worker_queue = queue.Queue()
         self.ws = ws
+        self.force_rerun_status = ["ERROR"]
     def hire_worker(self, worker):
-        self.workers.append(worker)
-        self.worker_queue.put(worker)
+        self.workers[worker.job_name] = worker
+        if worker.status in self.force_rerun_status + [""]:
+            self.todo_workers.append(worker)
+    def get_result(self):
+        result = []
+        for w in self.workers.values():
+            result.append(w.job_report())
+        return result
+    def run_project(self, max_concurrent):
+        while len(self.todo_workers) > 0:
+            for w in self.todo_workers:
+                if w.dep is not None:
+                    if self.workers[w.dep].status != "DONE":
+                        continue
+                w.setup_cwd()
+                self.worker_queue.put(w)
+                self.todo_workers.remove(w)
+            if self.worker_queue.qsize() > 0:
+                self.start_works(max_concurrent)
+            else:
+                print("Can not dispatch job. Please check the job dependency")
+                break
     def start_works(self, max_concurrent):
-        for w in self.workers:
-            w.setup_cwd()
         all_threads = []
         for i in range(max_concurrent):
             th = threading.Thread(target=self.send_worker)
@@ -108,13 +125,19 @@ class Boss:
         while self.worker_queue.qsize() > 0:
             worker = self.worker_queue.get()
             worker.act()
+    def set_force_rerun_status(self, status_list):
+        self.force_rerun_status = status_list
 
 class Worker:
     def __init__(self, job_name, job_data, ws):
         self.job_name = job_name
         self.job_data = job_data
+        self.dep = job_data.get("dep", None)
         self.envs = job_data.get("envs", {})
-        self.cmds = job_data.get("cmds", [])
+        cmds = job_data.get("cmds", [])
+        cmds = [c.replace("@DEP", f"{os.path.realpath(ws)}/{self.dep}") for c in cmds]
+        cmds = [c.replace("@WD", os.getcwd()) for c in cmds]
+        self.cmds = cmds
         if len(self.cmds) == 0:
             raise ValueError(f"{job_name} cmds is empty")
         self.failed_cmd = ""
@@ -141,6 +164,7 @@ class Worker:
         status_map = {
             "SE_STATUS@DONE": "DONE",
             "SE_STATUS@ERROR": "ERROR",
+            "SE_STATUS@WAITING": "WAITING",
             "SE_STATUS@RUNNING": "RUNNING",
         }
         for k, v in status_map.items():

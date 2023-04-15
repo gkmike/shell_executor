@@ -1,0 +1,9 @@
+job_1:
+    cmds:
+        - cp @WD/src/a.cpp .
+        - gcc a.cpp -o a.out
+job_2:
+    dep: job_1
+    cmds:
+        - ln -s @DEP/a.out
+        - ./a.out
