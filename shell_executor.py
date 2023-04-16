@@ -5,6 +5,7 @@ import queue
 import threading
 import argparse
 import shutil
+import concurrent.futures
 
 class Agent:
     def __init__(self, ws, jobs, **kwargs):
@@ -12,11 +13,13 @@ class Agent:
         if "rerun_status" in kwargs:
             self.boss.set_rerun_status(kwargs["rerun_status"])
         self.ws = ws
-        self.jobs = None
-        self.load_jobs(jobs)
-    def load_jobs(self, jobs):
         self.jobs = jobs
-        for job_name, job_data in jobs.items():
+        self.load_jobs(jobs.keys())
+    def load_jobs(self, selected_job_names):
+        print(selected_job_names)
+        for job_name, job_data in self.jobs.items():
+            if job_name not in selected_job_names:
+                continue
             w = Worker(job_name, job_data, self.ws)
             self.boss.hire_worker(w)
     def run(self, max_concurrent):
@@ -40,12 +43,17 @@ class GUI:
     def __init__(self, agent):
         import pandas as pd
         import gradio as gr
-        def reload_jobs():
-            df = pd.DataFrame(agent.get_result())
-            df = df[["job_name", "status", "envs", "console_log"]]
+        df_ori = pd.DataFrame(agent.get_result())
+
+        def fix_df(df):
+            df = df[["job_name", "status", "envs"]]
             df["status"] = df["status"].apply(status_color)
             df["envs"] = df["envs"].apply(env_str)
             return df
+
+        def reload_jobs():
+            df = pd.DataFrame(agent.get_result())
+            return fix_df(df)
         def status_color(val):
             color_map = {
                     "RUNNING": "blue",
@@ -59,29 +67,49 @@ class GUI:
             for k,v in d.items():
                 ret += f"{k}={v} "
             return ret
-        def gui_run(x):
-            agent.load_jobs(agent.jobs)
-            agent.run(1)
-            return "done"
+        def gui_run(df, max_workers):
+            agent.load_jobs(list(df["job_name"]))
+            agent.run(max_workers)
+            return "Done"
+        def get_df(text_filter):
+            df = df_ori.query(text_filter)
+            print(text_filter, df)
+            return fix_df(df)
         with gr.Blocks() as demo:
-            with gr.Row():
-                btn = gr.Button("run")
-                btn2 = gr.Button("reload")
-            df = reload_jobs()
-            gdf = gr.DataFrame(df, interactive=False, datatype=["markdown", "markdown", "markdown", "str"], wrap=True)
+            btn2 = gr.Button("Refresh Status Table")
+            df_filter = gr.Textbox(label="df filter", info="input filter for the following table for check and run")
+            gdf = gr.DataFrame(reload_jobs(), interactive=False, datatype=["str", "markdown", "str", "str"], wrap=True)
             with gr.Box():
-                gr.Markdown("Status")
-                lb = gr.Label("")
-            btn.click(gui_run, inputs=[gdf], outputs=[lb]).then(reload_jobs, outputs=[gdf])
+                gr.Markdown("Job Details")
+                with gr.Row():
+                    detail = gr.Code(language="yaml")
+                    console_log = gr.Code(language="shell")
+            with gr.Box():
+                gr.Markdown("Run Controller")
+                with gr.Row():
+                    sld = gr.Slider(0, 1000, value=1, step=1, label="Max Workers")
+                    btn = gr.Button("Start")
+                    lb = gr.Label("Ready To Start")
+            df_filter.submit(get_df, inputs=[df_filter], outputs=[gdf])
+            btn.click(gui_run, inputs=[gdf, sld], outputs=[lb]).then(reload_jobs, outputs=[gdf])
             btn2.click(reload_jobs, outputs=[gdf])
-            def gdf_select(df, evt: gr.SelectData):
+            def gdf_select(evt: gr.SelectData):
                 row = evt.index[0]
                 col = evt.index[1]
                 val = evt.value
-                print(val)
                 if col == 3:
                     sub.run(f"gvim {val}", shell=True)
-            gdf.select(gdf_select, inputs=[gdf])
+                if col == 0:
+                    report = agent.boss.workers[val].job_report()
+                    yaml_out = yaml.dump(report, sort_keys=False, default_flow_style=False)
+                    console_log_file = report["console_log"]
+                    job_log = ""
+                    if os.path.isfile(console_log_file):
+                        with open(report["console_log"]) as fp:
+                            job_log = fp.read()
+                    return yaml_out, job_log
+                return "", ""
+            gdf.select(gdf_select, outputs=[detail, console_log])
             demo.load(reload_jobs, outputs=[gdf])
         demo.launch(inbrowser=True)
 
@@ -89,9 +117,11 @@ class Boss:
     def __init__(self, ws):
         self.workers = {}
         self.todo_workers = []
-        self.worker_queue = queue.Queue()
         self.ws = ws
         self.rerun_status = ["ERROR"]
+    def reset(self):
+        self.workers = {}
+        self.todo_workers = {}
     def hire_worker(self, worker):
         self.workers[worker.job_name] = worker
         self.todo_workers.append(worker)
@@ -102,33 +132,19 @@ class Boss:
         return result
     def run_project(self, max_concurrent):
         while len(self.todo_workers) > 0:
-            for w in self.todo_workers:
-                if w.dep is not None:
-                    if self.workers[w.dep].status != "DONE":
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+                futures = []
+                for w in self.todo_workers[:]:
+                    if w.dep is not None:
+                        if self.workers[w.dep].status != "DONE":
+                            continue
+                    self.todo_workers.remove(w)
+                    if w.status not in self.rerun_status + [""]:
                         continue
-                self.todo_workers.remove(w)
-                if w.status not in self.rerun_status + [""]:
-                    continue
-                w.setup_cwd()
-                self.worker_queue.put(w)
-            if self.worker_queue.qsize() > 0:
-                self.start_works(max_concurrent)
-            else:
-                print("Can not dispatch job. Please check the job dependency")
-                break
-    def start_works(self, max_concurrent):
-        all_threads = []
-        for i in range(max_concurrent):
-            th = threading.Thread(target=self.send_worker)
-            th.setDaemon(True)
-            all_threads.append(th)
-            th.start()
-        for th in all_threads:
-            th.join()
-    def send_worker(self):
-        while self.worker_queue.qsize() > 0:
-            worker = self.worker_queue.get()
-            worker.act()
+                    w.setup_cwd()
+                    future = executor.submit(w.act)
+                    futures.append(future)
+                [future.result() for future in futures]
     def set_rerun_status(self, status_list):
         self.rerun_status = status_list
 
@@ -148,6 +164,7 @@ class Worker:
         self.cwd = ws + "/" + self.job_name
         self.log_path = self.cwd + "/se_console.log"
         self.status = self.get_status()
+        self.yaml = self.cwd + "/se_job.yaml"
     def setup_cwd(self):
         if os.path.exists(self.cwd):
             shutil.rmtree(self.cwd)
@@ -160,8 +177,7 @@ class Worker:
             for c in self.cmds:
                 fp.write(f"{c} \n")
         os.chmod(rerun_sh, 0o755)
-        cmd_yaml = self.cwd + "/se_job.yaml"
-        with open(cmd_yaml, "w") as fp:
+        with open(self.yaml, "w") as fp:
             yd = {self.job_name: self.job_data}
             yaml.dump(yd, fp, sort_keys=False, default_flow_style=False)
     def get_status(self):

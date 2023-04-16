@@ -2,7 +2,7 @@
 import shell_executor as se
 
 jobs = {}
-for i in range(1000):
+for i in range(10):
     jobs[f"{i}"] = {
         "envs": {"id": i},
         "cmds": ["echo hi"],
