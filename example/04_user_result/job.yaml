@@ -1,0 +1,7 @@
+job_1:
+    envs:
+        MY_ENV: 1
+    cmds:
+        - "echo py_ver: `python3 -V` >> se_user_result.yaml"
+        - "echo os: `uname` >> se_user_result.yaml"
+        - sleep 1
