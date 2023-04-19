@@ -129,11 +129,11 @@ class Boss:
                 futures = []
                 for w in self.todo_workers[:]:
                     if w.dep is not None:
-                        if self.workers[w.dep].status != "DONE":
+                        if self.workers[w.dep].attr("status") != "DONE":
                             continue
                     self.todo_workers.remove(w)
                     complete_jobs += 1
-                    if w.status == "DONE":
+                    if w.attr("status") == "DONE":
                         continue
                     w.setup_cwd()
                     future = executor.submit(w.act)
@@ -146,90 +146,102 @@ class Boss:
 
 class Worker:
     def __init__(self, job_name, job_data, ws):
+        cwd = ws + "/" + job_name
         self.job_name = job_name
-        self.job_data = job_data
-        self.dep = job_data.get("dep", None)
-        self.envs = job_data.get("envs", {})
-        if not isinstance(self.envs, dict):
-            raise ValueError(job_name + " env is not dict: ", self.envs)
-        dep_path = f"{os.path.realpath(ws)}/{self.dep}"
+        dep = job_data.get("dep", None)
+        self.dep = dep
+        if self.get_exist_job_data(cwd):
+            return
+        job_data["job_name"] = job_name
+        job_data["status"] = ""
+        envs = job_data.get("envs", {})
+        job_data["envs"] = envs
+        if not isinstance(envs, dict):
+            raise ValueError(job_name + " env is not dict: ", envs)
+        dep_path = f"{os.path.realpath(ws)}/{dep}"
         cmds = job_data.get("cmds", [])
         if not isinstance(cmds, list):
             raise ValueError(job_name + " cmds is not list: ", cmds)
-        cmds = [c.replace("@DEP", dep_path) for c in cmds]
-        cmds = [c.replace("@WD", os.getcwd()) for c in cmds]
-        self.cmds = cmds
-        if len(self.cmds) == 0:
+        if len(cmds) == 0:
             raise ValueError(f"{job_name} cmds is empty")
-        self.failed_cmd = ""
-        self.cwd = ws + "/" + self.job_name
-        self.log_path = self.cwd + "/se_console.log"
-        self.status = self.get_status()
-        self.yaml = self.cwd + "/se_job.yaml"
-        self.user_results = self.get_user_results()
-        self.get_job_time()
+        new_cmds = []
+        for cmd in cmds:
+            if "@DEP" in cmd:
+                cmd = cmd.replace("@DEP", dep_path)
+            if "@WD" in cmd:
+                cmd = cmd.replace("@WD", os.getcwd())
+            new_cmds.append(cmd)
+        job_data["cmds"] = new_cmds
+        job_data["failed_cmd"] = ""
+        job_data["cwd"] = cwd
+        job_data["log_path"] = cwd + "/se_console.log"
+        self.job_data = job_data
+    def attr(self, name):
+        val = self.job_data.get(name, "")
+        if name == "results":
+            val = {}
+        return val
+        
+    def update_status(self, val):
+        self.job_data["status"] = val
     def setup_cwd(self):
-        if os.path.exists(self.cwd):
-            shutil.rmtree(self.cwd)
-        os.makedirs(self.cwd)
-        rerun_sh = self.cwd + "/rerun.sh"
+        cwd = self.job_data["cwd"]
+        envs = self.job_data["envs"]
+        cmds = self.job_data["cmds"]
+        if os.path.exists(cwd):
+            shutil.rmtree(cwd)
+        os.makedirs(cwd)
+        rerun_sh = cwd + "/rerun.sh"
         with open(rerun_sh, "w") as fp:
             fp.write("set -e -x \n")
-            for k, v in self.envs.items():
+            for k, v in envs.items():
                 fp.write(f"export {k}={v} \n")
-            for c in self.cmds:
+            for c in cmds:
                 fp.write(f"{c} \n")
         os.chmod(rerun_sh, 0o755)
-        self.dump_job_yaml()
-    def get_status(self):
-        status_map = {
-            "SE_STATUS@DONE": "DONE",
-            "SE_STATUS@ERROR": "ERROR",
-            "SE_STATUS@RUNNING": "RUNNING",
-            "SE_STATUS@WAITING": "WAITING",
-        }
-        for k, v in status_map.items():
-            f = self.cwd + "/" + k
-            if os.path.isfile(f):
-                return v
-        return ""
-    def update_status(self, status):
-        self.status = status
-        sub.run(f"rm -f SE_STATUS*;touch SE_STATUS@{self.status}", shell=True, cwd=self.cwd)
-    def get_job_time(self):
-        if os.path.isfile(self.yaml):
-            with open(self.yaml) as fp:
-                yd = yaml.safe_load(fp)
-                self.job_data["job_duration"] = yd[self.job_name].get("job_duration", "0")
-                self.job_data["job_start_time"] = yd[self.job_name].get("job_start_time", "0")
-    def dump_job_yaml(self):
-        with open(self.yaml, "w") as fp:
-            yd = {self.job_name: self.job_data}
-            yaml.dump(yd, fp, sort_keys=False, default_flow_style=False)
+    def get_exist_job_data(self, cwd):
+        job_yaml = cwd + "/se_job.yaml"
+        if os.path.isfile(job_yaml):
+            with open(job_yaml) as fp:
+                self.job_data = yaml.safe_load(fp)
+            return True
+        else:
+            return False
+    def dump_job_data(self):
+        job_yaml = self.job_data["cwd"] + "/se_job.yaml"
+        with open(job_yaml, "w") as fp:
+            yaml.dump(self.job_data, fp, sort_keys=False, default_flow_style=False)
     def act(self):
-        envs = {k: str(v) for k, v in self.envs.items()}
+        cwd = self.job_data["cwd"]
+        envs = self.job_data["envs"]
+        cmds = self.job_data["cmds"]
+        log_path = self.job_data["log_path"]
+        envs = {k: str(v) for k, v in envs.items()}
         all_env = {**os.environ, **envs}
         self.update_status("RUNNING")
         job_start_time = datetime.now().replace(microsecond=0)
-        with open(self.log_path, "w") as fp:
-            for c in self.cmds:
+        with open(log_path, "w") as fp:
+            for c in cmds:
                 fp.write(f"++ {c}\n")
                 fp.flush()
-                r = sub.run(c, shell=True, stdout=fp, stderr=fp, cwd=self.cwd, env=all_env)
+                r = sub.run(c, shell=True, stdout=fp, stderr=fp, cwd=cwd, env=all_env)
                 ret_code = r.returncode
                 if ret_code != 0:
-                    self.failed_cmd = c
+                    self.job_data["failed_cmd"] = c
                     self.update_status("ERROR")
+                    self.dump_job_data()
                     return
-        self.user_results = self.get_user_results()
+        self.job_data["results"] = self.get_user_results()
         job_end_time = datetime.now().replace(microsecond=0)
         job_duration = str(job_end_time - job_start_time)
         self.job_data["job_duration"] = job_duration
         self.job_data["job_start_time"] = job_start_time
-        self.dump_job_yaml()
         self.update_status("DONE")
+        self.dump_job_data()
     def get_user_results(self):
-        user_result_file = f"{self.cwd}/se_user_result.yaml"
+        cwd = self.job_data["cwd"]
+        job_name = self.job_data["job_name"]
+        user_result_file = f"{cwd}/se_user_result.yaml"
         user_results = {}
         if os.path.exists(user_result_file):
             with open(user_result_file) as fp:
@@ -237,32 +249,21 @@ class Worker:
                     user_results = yaml.safe_load(fp)
                     if not isinstance(user_results, dict):
                         user_results = {}
-                        print(self.job_name, " user result yaml is not dict")
+                        print(job_name, " user result yaml is not dict")
                 except yaml.YAMLError as e:
                     user_results = {}
-                    print(self.job_name, e)
+                    print(job_name, e)
         return user_results
     
     def job_table(self):
-        result = self.job_report()
+        job_data = self.job_data.copy()
         for target in ["envs", "results"]:
-            kv = result.pop(target)
-            for k, v in kv.items():
-                t = target[:-1]
-                result[f"{t}/{k}"] = v
-        return result
+            if target in job_data:
+                kv = job_data.pop(target)
+                for k, v in kv.items():
+                    t = target[:-1]
+                    job_data[f"{t}/{k}"] = v
+        return job_data
  
     def job_report(self):
-        result = {
-            "job_name": self.job_name,
-            "status": self.status,
-            "cmds": self.cmds,
-            "failed_cmd": self.failed_cmd,
-            "cwd": self.cwd,
-            "console_log": self.log_path,
-            "envs": self.envs,
-            "results": self.user_results,
-            "job_start_time": self.job_data.get("job_start_time", "0"),
-            "job_duration": self.job_data.get("job_duration", "0"),
-        }
-        return result
+        return self.job_data
