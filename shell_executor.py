@@ -53,6 +53,10 @@ class GUI:
             if text_filter.strip() != "":
                 df = df.query(text_filter)
             return df[show_col]
+        def get_jobs_df_drop(xx):
+            df = get_jobs_df(xx)
+            job_names = list(df["job_name"].unique())
+            return df, gr.Dropdown.update(choices=job_names)
         def pre(val):
             return f"<pre>{val}</pre>"
         def status_color(val):
@@ -69,6 +73,7 @@ class GUI:
         with gr.Blocks() as demo:
             gr_refresh_btn = gr.Button("Refresh Status Table")
             gr_filter_textbox = gr.Textbox(label="df filter", info="input filter for the following table for check and run")
+            gr_jnames_dropdown = gr.Dropdown(interactive=True, multiselect=True, label="job_names_filters")
             gr_df = gr.DataFrame(interactive=False, wrap=True)
             gr_df.datatype = "markdown"
             with gr.Box():
@@ -86,7 +91,7 @@ class GUI:
             gr_start_btn.click(gui_run, inputs=[gr_df, gr_nworks_slider], outputs=[gr_status_label]).then(
                     get_jobs_df, outputs=[gr_df], inputs=[gr_filter_textbox]
             )
-            gr_refresh_btn.click(get_jobs_df, outputs=[gr_df], inputs=[gr_filter_textbox])
+            gr_refresh_btn.click(get_jobs_df_drop, outputs=[gr_df, gr_jnames_dropdown], inputs=[gr_filter_textbox])
             def gr_df_select(evt: gr.SelectData):
                 row = evt.index[0]
                 col = evt.index[1]
@@ -121,7 +126,7 @@ class Boss:
             result.append(w.job_table())
         return result
     def get_worker_report(self, job_name):
-        return self.workers[job_name].job_table()
+        return self.workers[job_name].job_report()
     def run(self, max_concurrent):
         while len(self.todo_workers) > 0:
             complete_jobs = 0
@@ -174,13 +179,13 @@ class Worker:
         job_data["cmds"] = new_cmds
         job_data["failed_cmd"] = ""
         job_data["cwd"] = cwd
-        job_data["log_path"] = cwd + "/se_console.log"
+        job_data["console_log"] = cwd + "/se_console.log"
+        job_data["results"] = {}
+        job_data["job_duration"] = ""
+        job_data["job_start_time"] = ""
         self.job_data = job_data
     def attr(self, name):
-        val = self.job_data.get(name, "")
-        if name == "results":
-            val = {}
-        return val
+        return self.job_data[name]
         
     def update_status(self, val):
         self.job_data["status"] = val
@@ -215,7 +220,7 @@ class Worker:
         cwd = self.job_data["cwd"]
         envs = self.job_data["envs"]
         cmds = self.job_data["cmds"]
-        log_path = self.job_data["log_path"]
+        log_path = self.job_data["console_log"]
         envs = {k: str(v) for k, v in envs.items()}
         all_env = {**os.environ, **envs}
         self.update_status("RUNNING")
