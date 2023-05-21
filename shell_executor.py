@@ -176,6 +176,7 @@ class Worker:
             if "@WD" in cmd:
                 cmd = cmd.replace("@WD", os.getcwd())
             new_cmds.append(cmd)
+        job_data.pop("cmds")
         job_data["cmds"] = new_cmds
         job_data["failed_cmd"] = ""
         job_data["cwd"] = cwd
