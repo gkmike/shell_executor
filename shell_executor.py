@@ -215,6 +215,7 @@ class Worker:
             return False
     def dump_job_data(self):
         job_yaml = self.job_data["cwd"] + "/se_job.yaml"
+        sub.run(f"rm -f {job_yaml}", shell=True)
         with open(job_yaml, "w") as fp:
             yaml.dump(self.job_data, fp, sort_keys=False, default_flow_style=False)
     def act(self):
