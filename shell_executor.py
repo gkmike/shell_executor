@@ -71,9 +71,13 @@ class GUI:
             agent.load_jobs_by_names(list(df["job_name"]))
             return agent.run(max_workers)
         with gr.Blocks() as demo:
-            gr_refresh_btn = gr.Button("Refresh Status Table")
+            with gr.Box():
+                gr.Markdown("Status")
+                with gr.Row():
+                    gr_status_label = gr.Label("Ready To Start")
+                    gr_refresh_btn = gr.Button("Refresh")
             gr_filter_textbox = gr.Textbox(label="df filter", info="input filter for the following table for check and run")
-            gr_jnames_dropdown = gr.Dropdown(interactive=True, multiselect=True, label="job_names_filters")
+            gr_jnames_dropdown = gr.Dropdown(interactive=True, multiselect=True, label="job_names_filters", visible=False)
             gr_df = gr.DataFrame(interactive=False, wrap=True)
             gr_df.datatype = "markdown"
             with gr.Box():
@@ -86,7 +90,6 @@ class GUI:
                 with gr.Row():
                     gr_nworks_slider = gr.Slider(0, 1000, value=1, step=1, label="Max Workers")
                     gr_start_btn = gr.Button("Start")
-                    gr_status_label = gr.Label("Ready To Start")
             gr_filter_textbox.submit(get_jobs_df, inputs=[gr_filter_textbox], outputs=[gr_df])
             gr_start_btn.click(gui_run, inputs=[gr_df, gr_nworks_slider], outputs=[gr_status_label]).then(
                     get_jobs_df, outputs=[gr_df], inputs=[gr_filter_textbox]
@@ -107,7 +110,7 @@ class GUI:
                     return yaml_out, job_log
                 return "", ""
             gr_df.select(gr_df_select, outputs=[gr_detail_code, gr_console_code])
-            demo.load(get_jobs_df, outputs=[gr_df], inputs=[gr_filter_textbox])
+            demo.load(get_jobs_df_drop, outputs=[gr_df, gr_jnames_dropdown], inputs=[gr_filter_textbox])
         demo.launch(inbrowser=True)
 
 class Boss:
